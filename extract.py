@@ -10,7 +10,7 @@ from bs4 import BeautifulSoup
 import sys
 import argparse
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 
 class GarminConnectScraper:
     def __init__(self, debug_port=9222):
@@ -125,15 +125,46 @@ class GarminConnectScraper:
         """Extract the activity date from the HTML content"""
         soup = BeautifulSoup(html_content, 'html.parser')
         
-        # Look for date information in various locations
+        # First try to find the specific activity detail title section with date info
+        activity_title = soup.find('div', class_='activity-detail-title')
+        if activity_title:
+            # Look for text like "by [username] on Thursday @ 14:30"
+            date_text = activity_title.get_text(strip=True)
+            print(f"Found activity title: {date_text}")
+            
+            # Extract the day and time part
+            day_time_match = re.search(r'on\s+(\w+)\s+@\s*(\d{1,2}:\d{2})', date_text)
+            month_day_match = re.search(r'on\s+(\d{1,2})\s+(\w+)\s+(\d{4})', date_text)
+            
+            if day_time_match:  # Format: "on Thursday @ 14:30"
+                weekday = day_time_match.group(1)
+                time_str = day_time_match.group(2)
+                print(f"Extracted weekday: {weekday}, time: {time_str}")
+                
+                # Convert weekday name to a date
+                return self.weekday_to_date(weekday)
+                
+            elif month_day_match:  # Format: "on 5 March 2025"
+                day = month_day_match.group(1)
+                month = month_day_match.group(2)
+                year = month_day_match.group(3)
+                print(f"Extracted date: {day} {month} {year}")
+                
+                # Parse the date
+                try:
+                    date_obj = datetime.strptime(f"{day} {month} {year}", "%d %B %Y")
+                    return date_obj.strftime("%Y-%m-%d")
+                except ValueError:
+                    print(f"Could not parse date: {day} {month} {year}")
+        
+        # If we didn't find or couldn't parse the date in the activity title, look elsewhere
         date_selectors = [
-            # Common date elements in Garmin Connect
-            '.datetime-local',  # Most common date class
-            '.activity-date',   # Another possible date class
-            '.activity-time',   # Time class that might contain date
-            '.header-date',     # Header date element
-            'time',             # HTML5 time element
-            'span[data-date]',  # Span with data-date attribute
+            '.datetime-local',
+            '.activity-date',
+            '.activity-time',
+            '.header-date',
+            'time',
+            'span[data-date]',
         ]
         
         # Try each selector
@@ -146,7 +177,6 @@ class GarminConnectScraper:
                 # Try to parse date from text
                 try:
                     # Look for common date formats
-                    # Handle formats like "January 15, 2023" or "15 Jan 2023" or "2023-01-15"
                     for date_format in ["%B %d, %Y", "%d %b %Y", "%Y-%m-%d", "%m/%d/%Y", "%d/%m/%Y"]:
                         try:
                             date_obj = datetime.strptime(date_text, date_format)
@@ -157,37 +187,51 @@ class GarminConnectScraper:
                     # If we still don't have a date, use regex to look for a date pattern
                     date_match = re.search(r'(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})', date_text)
                     if date_match:
-                        # This is a simple approach and might need adjustment based on locale
                         month, day, year = date_match.groups()
                         if len(year) == 2:
                             year = f"20{year}"
                         return f"{year}-{month.zfill(2)}-{day.zfill(2)}"
                     
-                    # If still no date, just return the text
-                    return date_text
-                    
                 except Exception as e:
                     print(f"Error parsing date: {str(e)}")
-                    return date_text
         
-        # Look for date in the URL or page title as a last resort
-        try:
-            # Check if the page title contains a date
-            title = soup.find('title')
-            if title:
-                title_text = title.text.strip()
-                date_match = re.search(r'(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})', title_text)
-                if date_match:
-                    month, day, year = date_match.groups()
-                    if len(year) == 2:
-                        year = f"20{year}"
-                    return f"{year}-{month.zfill(2)}-{day.zfill(2)}"
-        except:
-            pass
-        
-        # If no date found, return a placeholder
-        print("Could not find activity date on the page")
+        # If all else fails, save the HTML for inspection
+        with open("date_extraction_failed.html", "w", encoding="utf-8") as f:
+            f.write(html_content)
+        print("Could not find activity date. Saved HTML to 'date_extraction_failed.html'")
         return "Unknown"
+    
+    def weekday_to_date(self, weekday_name):
+        """Convert a weekday name to a date based on the current week"""
+        weekday_map = {
+            'monday': 0, 'tuesday': 1, 'wednesday': 2, 'thursday': 3, 
+            'friday': 4, 'saturday': 5, 'sunday': 6
+        }
+        
+        # Convert to lowercase and get the weekday number (0 = Monday, 6 = Sunday)
+        weekday_name = weekday_name.lower()
+        if weekday_name not in weekday_map:
+            print(f"Unknown weekday name: {weekday_name}")
+            return "Unknown"
+        
+        target_weekday = weekday_map[weekday_name]
+        
+        # Get today's date and weekday (0 = Monday, 6 = Sunday)
+        today = datetime.now()
+        today_weekday = today.weekday()
+        
+        # Calculate the date of the target weekday in the current week
+        # If the target weekday is earlier in the week than today, it refers to the previous week
+        days_diff = target_weekday - today_weekday
+        if days_diff > 0:  # Target day is later in the week
+            target_date = today + timedelta(days=days_diff)
+        elif days_diff < 0:  # Target day is earlier in the week, so it was in the previous week
+            target_date = today + timedelta(days=days_diff - 7)
+        else:  # Same day of the week
+            target_date = today
+        
+        print(f"Converted {weekday_name} to date: {target_date.strftime('%Y-%m-%d')}")
+        return target_date.strftime("%Y-%m-%d")
     
     def extract_workout_sets(self, html_content):
         """Extract workout sets from HTML content"""
