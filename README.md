@@ -12,7 +12,7 @@ Tool for extracting workout data from Garmin Connect website. Created with Lovab
 
     Windows
     ```shell
-    chrome.exe --remote-debugging-port=9222
+     & "C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=9222
     ```
     Linux
     ```shell
