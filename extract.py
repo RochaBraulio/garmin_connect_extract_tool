@@ -84,46 +84,164 @@ class GarminConnectScraper:
             # Parse the page to extract activity IDs and dates
             soup = BeautifulSoup(html_content, 'html.parser')
             
-            # Look for activities
-            activity_items = soup.find_all("div", class_=lambda c: c and "ActivityListItem_activityRow" in c)
-            print(f"Found {len(activity_items)} activities in the list")
+            # Debug: Save activities page source for inspection
+            with open("activities_page.html", "w", encoding="utf-8") as f:
+                f.write(html_content)
+            print("Saved activities page HTML to 'activities_page.html' for debugging")
             
-            for item in activity_items:
+            # Look for activities using the new class names from the user's input
+            activity_items = soup.find_all("div", class_=lambda c: c and "activity-list-container" in c or "ActivityListItem" in c if c else False)
+            if not activity_items:
+                print("No activity items found, trying alternative selectors...")
+                # Try a more general approach to find activities
+                activity_items = soup.find_all("div", attrs={"data-activity-id": True})
+                
+            print(f"Found {len(activity_items)} potential activity containers")
+            
+            # Find all date containers with the class names from user's example
+            date_containers = soup.find_all("div", class_=lambda c: c and "ActivityListItem_dateListContainer" in c if c else False)
+            print(f"Found {len(date_containers)} date containers")
+            
+            # Find all activity name links that contain the activity ID
+            activity_links = soup.find_all("a", href=lambda href: href and "/activity/" in href if href else False)
+            print(f"Found {len(activity_links)} activity links")
+            
+            # Process each activity link to extract ID and find associated date
+            for link in activity_links:
                 try:
-                    # Extract activity ID from the activity name link
-                    activity_link = item.find("a", href=True)
-                    if not activity_link:
+                    # Extract activity ID from the link
+                    href = link.get("href")
+                    if not href or "/activity/" not in href:
                         continue
                         
-                    activity_id = activity_link.get("href").split("/")[-1]
+                    activity_id = href.split("/")[-1]
                     
-                    # Extract date parts
-                    date_container = item.find("div", class_=lambda c: c and "ActivityListItem_dateListContainer" in c)
-                    if not date_container:
+                    # Find the parent container that contains both the link and date info
+                    parent_container = None
+                    parent = link.parent
+                    while parent and parent.name != "html":
+                        if parent.find("div", class_=lambda c: c and "ActivityListItem_dateListContainer" in c if c else False):
+                            parent_container = parent
+                            break
+                        parent = parent.parent
+                    
+                    if not parent_container:
+                        print(f"Could not find parent container with date for activity {activity_id}")
                         continue
-                        
-                    date_span = date_container.find("span", class_=lambda c: c and "ActivityListItem_activityDate" in c)
-                    year_span = date_container.find("span", class_=lambda c: c and "ActivityListItem_activityDateYear" in c)
+                    
+                    # Extract date from the parent container
+                    date_container = parent_container.find("div", class_=lambda c: c and "ActivityListItem_dateListContainer" in c if c else False)
+                    if not date_container:
+                        print(f"Could not find date container for activity {activity_id}")
+                        continue
+                    
+                    # Extract day/month and year separately as in the example
+                    date_span = date_container.find("span", class_=lambda c: c and "ActivityListItem_activityDate" in c if c else False)
+                    year_span = date_container.find("span", class_=lambda c: c and "ActivityListItem_activityDateYear" in c if c else False)
                     
                     if not date_span or not year_span:
+                        print(f"Could not find date spans for activity {activity_id}")
                         continue
-                        
-                    date_text = date_span.text.strip()  # Format: "20 Mar"
+                    
+                    date_text = date_span.text.strip()  # Format: "20 Mar" or day of week
                     year_text = year_span.text.strip()  # Format: "2025"
                     
-                    # Parse the date
+                    print(f"Activity {activity_id}: Raw date '{date_text}', year '{year_text}'")
+                    
+                    # Parse the date (handle both numeric dates and day names)
                     try:
-                        # Parse the date in "DD MMM YYYY" format
-                        date_obj = datetime.strptime(f"{date_text} {year_text}", "%d %b %Y")
-                        formatted_date = date_obj.strftime("%Y-%m-%d")
+                        if any(day in date_text.lower() for day in ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday']):
+                            # If it's a day name, calculate the date based on current date
+                            day_of_week = date_text.split('@')[0].strip().lower()
+                            days = {
+                                'monday': 0, 'tuesday': 1, 'wednesday': 2, 'thursday': 3, 
+                                'friday': 4, 'saturday': 5, 'sunday': 6
+                            }
+                            
+                            # Get today's weekday (0=Monday, 6=Sunday)
+                            today = datetime.now()
+                            today_weekday = today.weekday()  # 0 for Monday, 6 for Sunday
+                            
+                            # Find the target day index
+                            target_day_index = -1
+                            for day_name, day_index in days.items():
+                                if day_name in day_of_week:
+                                    target_day_index = day_index
+                                    break
+                            
+                            if target_day_index == -1:
+                                raise ValueError(f"Could not parse day of week: {day_of_week}")
+                            
+                            # Calculate the date
+                            days_diff = target_day_index - today_weekday
+                            if days_diff > 0:
+                                # Day is later this week (in the future)
+                                days_diff -= 7  # Go back to previous week
+                                
+                            target_date = today + timedelta(days=days_diff)
+                            formatted_date = target_date.strftime("%Y-%m-%d")
+                        else:
+                            # Parse the date in "DD MMM YYYY" format
+                            date_obj = datetime.strptime(f"{date_text} {year_text}", "%d %b %Y")
+                            formatted_date = date_obj.strftime("%Y-%m-%d")
                         
                         # Store the activity ID and date
                         self.activity_dates[activity_id] = formatted_date
-                        print(f"Activity {activity_id}: {formatted_date}")
+                        print(f"Activity {activity_id}: Parsed date {formatted_date}")
                     except ValueError as e:
                         print(f"Error parsing date '{date_text} {year_text}': {str(e)}")
+                        # Try an alternative date parsing as last resort
+                        try:
+                            if '@' in date_text:
+                                # This might be a day with time like "Thursday @ 14:30"
+                                day_part = date_text.split('@')[0].strip()
+                                # Use current year if not explicitly provided
+                                current_year = datetime.now().year
+                                if not year_text or not year_text.strip():
+                                    year_text = str(current_year)
+                                
+                                # Handle this specially
+                                today = datetime.now()
+                                weekday_map = {
+                                    'monday': 0, 'tuesday': 1, 'wednesday': 2, 'thursday': 3, 
+                                    'friday': 4, 'saturday': 5, 'sunday': 6
+                                }
+                                
+                                target_weekday = -1
+                                for day_name, day_num in weekday_map.items():
+                                    if day_name.lower() in day_part.lower():
+                                        target_weekday = day_num
+                                        break
+                                
+                                if target_weekday >= 0:
+                                    # Calculate the most recent occurrence of this weekday
+                                    days_ago = (today.weekday() - target_weekday) % 7
+                                    if days_ago == 0:
+                                        # If today is the target day, assume it's today's activity
+                                        target_date = today
+                                    else:
+                                        # Otherwise it was the most recent occurrence
+                                        target_date = today - timedelta(days=days_ago)
+                                    
+                                    formatted_date = target_date.strftime("%Y-%m-%d")
+                                    self.activity_dates[activity_id] = formatted_date
+                                    print(f"Activity {activity_id}: Resolved weekday to {formatted_date}")
+                                else:
+                                    # Fallback: Use today's date
+                                    formatted_date = today.strftime("%Y-%m-%d")
+                                    self.activity_dates[activity_id] = formatted_date
+                                    print(f"Activity {activity_id}: Using fallback date {formatted_date}")
+                            else:
+                                # Fallback: Use today's date
+                                formatted_date = datetime.now().strftime("%Y-%m-%d")
+                                self.activity_dates[activity_id] = formatted_date
+                                print(f"Activity {activity_id}: Using fallback date {formatted_date}")
+                        except Exception as inner_e:
+                            print(f"Error in alternative date parsing: {str(inner_e)}")
+                            # Ultimate fallback
+                            self.activity_dates[activity_id] = datetime.now().strftime("%Y-%m-%d")
                 except Exception as e:
-                    print(f"Error processing activity item: {str(e)}")
+                    print(f"Error processing activity link: {str(e)}")
             
             print(f"Extracted dates for {len(self.activity_dates)} activities")
             
