@@ -295,6 +295,32 @@ class GarminConnectScraper:
         df['reps'] = df['reps'].apply(convert_reps)
         print("Processed 'reps' column")
         
+        # Process weight column - extract numeric values
+        def extract_weight(weight_str):
+            if weight_str == "Bodyweight":
+                return weight_str
+            # Extract numbers from strings like "35 kg"
+            match = re.search(r'([\d,\.]+)', str(weight_str))
+            if match:
+                return float(match.group(1).replace(',', '.'))
+            return weight_str
+            
+        df['weight_value'] = df['weight'].apply(extract_weight)
+        print("Processed 'weight' column to 'weight_value'")
+        
+        # Process volume column - extract numeric values
+        def extract_volume(volume_str):
+            if not volume_str or volume_str == "Bodyweight":
+                return None
+            # Extract numbers from strings like "525 kg"
+            match = re.search(r'([\d,\.]+)', str(volume_str))
+            if match:
+                return float(match.group(1).replace(',', '.'))
+            return None
+            
+        df['volume_value'] = df['volume'].apply(extract_volume)
+        print("Processed 'volume' column to 'volume_value'")
+        
         # Process time and rest columns to seconds
         def time_to_seconds(time_str):
             if not time_str or str(time_str).strip() == '':
@@ -321,13 +347,6 @@ class GarminConnectScraper:
         # Drop the requested columns: 'set', 'weight', 'volume'
         columns_to_drop = ['set', 'weight', 'volume']
         for col in columns_to_drop:
-            if col in df.columns:
-                df = df.drop(columns=[col])
-                print(f"Dropped column: {col}")
-        
-        # Also drop the weight_value and volume_value columns if they were added
-        additional_cols_to_drop = ['weight_value', 'volume_value']
-        for col in additional_cols_to_drop:
             if col in df.columns:
                 df = df.drop(columns=[col])
                 print(f"Dropped column: {col}")
@@ -407,7 +426,6 @@ class GarminConnectScraper:
 
 # Process command-line arguments when run as script
 if __name__ == "__main__":
-    # ... keep existing code (command line argument handling)
     parser = argparse.ArgumentParser(description='Extract workout data from Garmin Connect using an existing Chrome session')
     parser.add_argument('--port', type=int, default=9222, help='Chrome debugging port (default: 9222)')
     parser.add_argument('--activity', type=str, action='append', help='Garmin activity ID(s) to extract (can be used multiple times)')
