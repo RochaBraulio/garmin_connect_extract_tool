@@ -10,6 +10,7 @@ from bs4 import BeautifulSoup
 import sys
 import argparse
 import os
+from datetime import datetime
 
 class GarminConnectScraper:
     def __init__(self, debug_port=9222):
@@ -120,7 +121,73 @@ class GarminConnectScraper:
             print(f"Retrieved page source in recovery mode ({len(html_content)} characters)")
             return html_content
     
-    # ... keep existing code (extract_workout_sets, create_workout_dataframe, etc.)
+    def extract_activity_date(self, html_content):
+        """Extract the activity date from the HTML content"""
+        soup = BeautifulSoup(html_content, 'html.parser')
+        
+        # Look for date information in various locations
+        date_selectors = [
+            # Common date elements in Garmin Connect
+            '.datetime-local',  # Most common date class
+            '.activity-date',   # Another possible date class
+            '.activity-time',   # Time class that might contain date
+            '.header-date',     # Header date element
+            'time',             # HTML5 time element
+            'span[data-date]',  # Span with data-date attribute
+        ]
+        
+        # Try each selector
+        for selector in date_selectors:
+            date_element = soup.select_one(selector)
+            if date_element:
+                date_text = date_element.text.strip()
+                print(f"Found date: {date_text} using selector: {selector}")
+                
+                # Try to parse date from text
+                try:
+                    # Look for common date formats
+                    # Handle formats like "January 15, 2023" or "15 Jan 2023" or "2023-01-15"
+                    for date_format in ["%B %d, %Y", "%d %b %Y", "%Y-%m-%d", "%m/%d/%Y", "%d/%m/%Y"]:
+                        try:
+                            date_obj = datetime.strptime(date_text, date_format)
+                            return date_obj.strftime("%Y-%m-%d")
+                        except ValueError:
+                            continue
+                    
+                    # If we still don't have a date, use regex to look for a date pattern
+                    date_match = re.search(r'(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})', date_text)
+                    if date_match:
+                        # This is a simple approach and might need adjustment based on locale
+                        month, day, year = date_match.groups()
+                        if len(year) == 2:
+                            year = f"20{year}"
+                        return f"{year}-{month.zfill(2)}-{day.zfill(2)}"
+                    
+                    # If still no date, just return the text
+                    return date_text
+                    
+                except Exception as e:
+                    print(f"Error parsing date: {str(e)}")
+                    return date_text
+        
+        # Look for date in the URL or page title as a last resort
+        try:
+            # Check if the page title contains a date
+            title = soup.find('title')
+            if title:
+                title_text = title.text.strip()
+                date_match = re.search(r'(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})', title_text)
+                if date_match:
+                    month, day, year = date_match.groups()
+                    if len(year) == 2:
+                        year = f"20{year}"
+                    return f"{year}-{month.zfill(2)}-{day.zfill(2)}"
+        except:
+            pass
+        
+        # If no date found, return a placeholder
+        print("Could not find activity date on the page")
+        return "Unknown"
     
     def extract_workout_sets(self, html_content):
         """Extract workout sets from HTML content"""
@@ -173,7 +240,7 @@ class GarminConnectScraper:
                 rest = cells[3].text.strip()
                 reps = cells[4].text.strip()
                 
-                # Handle both normal weights and bodyweight exercises
+                # We're still collecting these for processing but will drop them later
                 weight_cell = cells[5]
                 if weight_cell.find('a') and 'Bodyweight' in weight_cell.text:
                     weight_text = "Bodyweight"
@@ -183,13 +250,13 @@ class GarminConnectScraper:
                 volume_text = cells[6].text.strip()
                 
                 set_data = {
-                    'set': set_number,
+                    'set': set_number,  # Will be dropped later
                     'exercise': exercise,
                     'time': time,
                     'rest': rest,
                     'reps': reps,
-                    'weight': weight_text,
-                    'volume': volume_text
+                    'weight': weight_text,  # Will be dropped later
+                    'volume': volume_text  # Will be dropped later
                 }
                 print(f"Set {set_number}: {exercise} - {reps} reps at {weight_text}")
                 workout_data.append(set_data)
@@ -198,8 +265,8 @@ class GarminConnectScraper:
         
         return workout_data
 
-    def create_workout_dataframe(self, workout_data):
-        """Convert workout data to a pandas DataFrame"""
+    def create_workout_dataframe(self, workout_data, activity_date):
+        """Convert workout data to a pandas DataFrame with the specified columns"""
         if not workout_data:
             print("No workout data to convert to DataFrame")
             return pd.DataFrame()
@@ -207,7 +274,11 @@ class GarminConnectScraper:
         df = pd.DataFrame(workout_data)
         print(f"Created DataFrame with {len(df)} rows and {len(df.columns)} columns")
         
-        # Convert numeric columns
+        # Add the activity date as a column
+        df['date'] = activity_date
+        print(f"Added date column with value: {activity_date}")
+        
+        # Process remaining columns (still process set before dropping it)
         try:
             df['set'] = df['set'].astype(int)
             print("Converted 'set' column to integers")
@@ -223,32 +294,6 @@ class GarminConnectScraper:
                 
         df['reps'] = df['reps'].apply(convert_reps)
         print("Processed 'reps' column")
-        
-        # Process weight column - extract numeric values
-        def extract_weight(weight_str):
-            if weight_str == "Bodyweight":
-                return weight_str
-            # Extract numbers from strings like "35 kg"
-            match = re.search(r'([\d,\.]+)', str(weight_str))
-            if match:
-                return float(match.group(1).replace(',', '.'))
-            return weight_str
-            
-        df['weight_value'] = df['weight'].apply(extract_weight)
-        print("Processed 'weight' column")
-        
-        # Process volume column - extract numeric values
-        def extract_volume(volume_str):
-            if not volume_str or volume_str == "Bodyweight":
-                return None
-            # Extract numbers from strings like "525 kg"
-            match = re.search(r'([\d,\.]+)', str(volume_str))
-            if match:
-                return float(match.group(1).replace(',', '.'))
-            return None
-            
-        df['volume_value'] = df['volume'].apply(extract_volume)
-        print("Processed 'volume' column")
         
         # Process time and rest columns to seconds
         def time_to_seconds(time_str):
@@ -273,6 +318,20 @@ class GarminConnectScraper:
         df['rest_seconds'] = df['rest'].apply(time_to_seconds)
         print("Processed time and rest columns")
         
+        # Drop the requested columns: 'set', 'weight', 'volume'
+        columns_to_drop = ['set', 'weight', 'volume']
+        for col in columns_to_drop:
+            if col in df.columns:
+                df = df.drop(columns=[col])
+                print(f"Dropped column: {col}")
+        
+        # Also drop the weight_value and volume_value columns if they were added
+        additional_cols_to_drop = ['weight_value', 'volume_value']
+        for col in additional_cols_to_drop:
+            if col in df.columns:
+                df = df.drop(columns=[col])
+                print(f"Dropped column: {col}")
+        
         return df
 
     def save_dataframe_to_csv(self, df, filename="workout_data.csv"):
@@ -285,9 +344,13 @@ class GarminConnectScraper:
         html_content = self.get_activity_data(activity_id)
         workout_data = self.extract_workout_sets(html_content)
         
+        # Extract the activity date
+        activity_date = self.extract_activity_date(html_content)
+        print(f"Activity date: {activity_date}")
+        
         if workout_data:
             print(f"Successfully extracted {len(workout_data)} workout sets")
-            df = self.create_workout_dataframe(workout_data)
+            df = self.create_workout_dataframe(workout_data, activity_date)
             
             # Add activity_id as a column
             df['activity_id'] = activity_id
@@ -344,6 +407,7 @@ class GarminConnectScraper:
 
 # Process command-line arguments when run as script
 if __name__ == "__main__":
+    # ... keep existing code (command line argument handling)
     parser = argparse.ArgumentParser(description='Extract workout data from Garmin Connect using an existing Chrome session')
     parser.add_argument('--port', type=int, default=9222, help='Chrome debugging port (default: 9222)')
     parser.add_argument('--activity', type=str, action='append', help='Garmin activity ID(s) to extract (can be used multiple times)')
@@ -398,12 +462,11 @@ if __name__ == "__main__":
             
             if 'exercise' in df.columns:
                 # Group exercises across all activities
-                exercise_summary = df.groupby(['activity_id', 'exercise']).agg({
-                    'set': 'count', 
+                exercise_summary = df.groupby(['activity_id', 'exercise', 'date']).agg({
                     'reps': 'sum'
-                }).rename(columns={'set': 'total_sets'})
+                })
                 
-                print("\nExercise Summary by Activity:")
+                print("\nExercise Summary by Activity and Date:")
                 print(exercise_summary)
             
         else:
