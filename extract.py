@@ -25,6 +25,7 @@ class GarminConnectScraper:
             print(f"Current URL: {self.driver.current_url}")
             
             self.base_url = "https://connect.garmin.com"
+            self.activity_dates = {}  # Dictionary to store activity IDs and their dates
             
             # Check if already logged in
             self.verify_login()
@@ -46,7 +47,7 @@ class GarminConnectScraper:
             print("Already logged into Garmin Connect")
             self.logged_in = True
         else:
-            print("Not logged into Garmin Connect.")
+            print("Not logged in to Garmin Connect.")
             print("Please log in to Garmin Connect in your Chrome browser first.")
             print("Current URL:", current_url)
             user_input = input("Are you logged in now? (yes/no): ")
@@ -55,6 +56,83 @@ class GarminConnectScraper:
             else:
                 print("Please log in and then restart this script.")
                 sys.exit(1)
+    
+    def get_dates_from_activities_page(self):
+        """Navigate to the activities page and extract dates for all activities"""
+        if not self.logged_in:
+            raise Exception("Not logged in to Garmin Connect")
+        
+        try:
+            # Navigate to the activities page
+            activities_url = f"{self.base_url}/modern/activities"
+            print(f"Navigating to activities list: {activities_url}")
+            self.driver.get(activities_url)
+            
+            # Wait for the activities to load
+            print("Waiting for activities list to load...")
+            WebDriverWait(self.driver, 10).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, "div.activity-list-container"))
+            )
+            
+            # Give it a bit more time for the activities to fully load
+            time.sleep(2)
+            
+            # Get the page source
+            html_content = self.driver.page_source
+            print(f"Retrieved activities page source ({len(html_content)} characters)")
+            
+            # Parse the page to extract activity IDs and dates
+            soup = BeautifulSoup(html_content, 'html.parser')
+            
+            # Look for activities
+            activity_items = soup.find_all("div", class_=lambda c: c and "ActivityListItem_activityRow" in c)
+            print(f"Found {len(activity_items)} activities in the list")
+            
+            for item in activity_items:
+                try:
+                    # Extract activity ID from the activity name link
+                    activity_link = item.find("a", href=True)
+                    if not activity_link:
+                        continue
+                        
+                    activity_id = activity_link.get("href").split("/")[-1]
+                    
+                    # Extract date parts
+                    date_container = item.find("div", class_=lambda c: c and "ActivityListItem_dateListContainer" in c)
+                    if not date_container:
+                        continue
+                        
+                    date_span = date_container.find("span", class_=lambda c: c and "ActivityListItem_activityDate" in c)
+                    year_span = date_container.find("span", class_=lambda c: c and "ActivityListItem_activityDateYear" in c)
+                    
+                    if not date_span or not year_span:
+                        continue
+                        
+                    date_text = date_span.text.strip()  # Format: "20 Mar"
+                    year_text = year_span.text.strip()  # Format: "2025"
+                    
+                    # Parse the date
+                    try:
+                        # Parse the date in "DD MMM YYYY" format
+                        date_obj = datetime.strptime(f"{date_text} {year_text}", "%d %b %Y")
+                        formatted_date = date_obj.strftime("%Y-%m-%d")
+                        
+                        # Store the activity ID and date
+                        self.activity_dates[activity_id] = formatted_date
+                        print(f"Activity {activity_id}: {formatted_date}")
+                    except ValueError as e:
+                        print(f"Error parsing date '{date_text} {year_text}': {str(e)}")
+                except Exception as e:
+                    print(f"Error processing activity item: {str(e)}")
+            
+            print(f"Extracted dates for {len(self.activity_dates)} activities")
+            
+            # If we need more activities (scrolling for pagination), we could add that here
+            
+            return self.activity_dates
+        except Exception as e:
+            print(f"Error retrieving activity dates: {str(e)}")
+            return {}
     
     def get_activity_data(self, activity_id):
         """Navigate to the activity page and get the page content"""
@@ -120,118 +198,6 @@ class GarminConnectScraper:
             html_content = self.driver.page_source
             print(f"Retrieved page source in recovery mode ({len(html_content)} characters)")
             return html_content
-    
-    def extract_activity_date(self, html_content):
-        """Extract the activity date from the HTML content"""
-        soup = BeautifulSoup(html_content, 'html.parser')
-        
-        # First try to find the specific activity detail title section with date info
-        activity_title = soup.find('div', class_='activity-detail-title')
-        if activity_title:
-            # Look for text like "by [username] on Thursday @ 14:30"
-            date_text = activity_title.get_text(strip=True)
-            print(f"Found activity title: {date_text}")
-            
-            # Extract the day and time part
-            day_time_match = re.search(r'on\s+(\w+)\s+@\s*(\d{1,2}:\d{2})', date_text)
-            month_day_match = re.search(r'on\s+(\d{1,2})\s+(\w+)\s+(\d{4})', date_text)
-            
-            if day_time_match:  # Format: "on Thursday @ 14:30"
-                weekday = day_time_match.group(1)
-                time_str = day_time_match.group(2)
-                print(f"Extracted weekday: {weekday}, time: {time_str}")
-                
-                # Convert weekday name to a date
-                return self.weekday_to_date(weekday)
-                
-            elif month_day_match:  # Format: "on 5 March 2025"
-                day = month_day_match.group(1)
-                month = month_day_match.group(2)
-                year = month_day_match.group(3)
-                print(f"Extracted date: {day} {month} {year}")
-                
-                # Parse the date
-                try:
-                    date_obj = datetime.strptime(f"{day} {month} {year}", "%d %B %Y")
-                    return date_obj.strftime("%Y-%m-%d")
-                except ValueError:
-                    print(f"Could not parse date: {day} {month} {year}")
-        
-        # If we didn't find or couldn't parse the date in the activity title, look elsewhere
-        date_selectors = [
-            '.datetime-local',
-            '.activity-date',
-            '.activity-time',
-            '.header-date',
-            'time',
-            'span[data-date]',
-        ]
-        
-        # Try each selector
-        for selector in date_selectors:
-            date_element = soup.select_one(selector)
-            if date_element:
-                date_text = date_element.text.strip()
-                print(f"Found date: {date_text} using selector: {selector}")
-                
-                # Try to parse date from text
-                try:
-                    # Look for common date formats
-                    for date_format in ["%B %d, %Y", "%d %b %Y", "%Y-%m-%d", "%m/%d/%Y", "%d/%m/%Y"]:
-                        try:
-                            date_obj = datetime.strptime(date_text, date_format)
-                            return date_obj.strftime("%Y-%m-%d")
-                        except ValueError:
-                            continue
-                    
-                    # If we still don't have a date, use regex to look for a date pattern
-                    date_match = re.search(r'(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})', date_text)
-                    if date_match:
-                        month, day, year = date_match.groups()
-                        if len(year) == 2:
-                            year = f"20{year}"
-                        return f"{year}-{month.zfill(2)}-{day.zfill(2)}"
-                    
-                except Exception as e:
-                    print(f"Error parsing date: {str(e)}")
-        
-        # If all else fails, save the HTML for inspection
-        with open("date_extraction_failed.html", "w", encoding="utf-8") as f:
-            f.write(html_content)
-        print("Could not find activity date. Saved HTML to 'date_extraction_failed.html'")
-        return "Unknown"
-    
-    def weekday_to_date(self, weekday_name):
-        """Convert a weekday name to a date based on the current week"""
-        weekday_map = {
-            'monday': 0, 'tuesday': 1, 'wednesday': 2, 'thursday': 3, 
-            'friday': 4, 'saturday': 5, 'sunday': 6
-        }
-        
-        # Convert to lowercase and get the weekday number (0 = Monday, 6 = Sunday)
-        weekday_name = weekday_name.lower()
-        if weekday_name not in weekday_map:
-            print(f"Unknown weekday name: {weekday_name}")
-            return "Unknown"
-        
-        target_weekday = weekday_map[weekday_name]
-        
-        # Get today's date and weekday (0 = Monday, 6 = Sunday)
-        today = datetime.now()
-        today_weekday = today.weekday()
-        
-        # Calculate the date of the target weekday in the current week
-        # If the target weekday is earlier in the week than today, it refers to the previous week
-        days_diff = target_weekday - today_weekday
-        if days_diff > 0:  # Target day is later in the week
-            target_date = today + timedelta(days=days_diff)
-        elif days_diff < 0:  # Target day is earlier in the week, so it was in the previous week
-            target_date = today + timedelta(days=days_diff - 7)
-        else:  # Same day of the week
-            target_date = today
-        
-        print(f"Converted {weekday_name} to date: {target_date.strftime('%Y-%m-%d')}")
-        return target_date.strftime("%Y-%m-%d")
     
     def extract_workout_sets(self, html_content):
         """Extract workout sets from HTML content"""
@@ -407,9 +373,9 @@ class GarminConnectScraper:
         html_content = self.get_activity_data(activity_id)
         workout_data = self.extract_workout_sets(html_content)
         
-        # Extract the activity date
-        activity_date = self.extract_activity_date(html_content)
-        print(f"Activity date: {activity_date}")
+        # Get the activity date from our dictionary
+        activity_date = self.activity_dates.get(activity_id, "Unknown")
+        print(f"Activity date from activities list: {activity_date}")
         
         if workout_data:
             print(f"Successfully extracted {len(workout_data)} workout sets")
@@ -425,6 +391,10 @@ class GarminConnectScraper:
     
     def process_multiple_activities(self, activity_ids, output_dir="."):
         """Process multiple activities and save each to a separate CSV file"""
+        # First get dates for all activities
+        print("\nGetting activity dates from activities list page...")
+        self.get_dates_from_activities_page()
+        
         # Create output directory if it doesn't exist
         os.makedirs(output_dir, exist_ok=True)
         
@@ -470,76 +440,4 @@ class GarminConnectScraper:
 
 # Process command-line arguments when run as script
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='Extract workout data from Garmin Connect using an existing Chrome session')
-    parser.add_argument('--port', type=int, default=9222, help='Chrome debugging port (default: 9222)')
-    parser.add_argument('--activity', type=str, action='append', help='Garmin activity ID(s) to extract (can be used multiple times)')
-    parser.add_argument('--output', type=str, default='.', help='Output directory for CSV files (default: current directory)')
-    parser.add_argument('--file', type=str, help='File containing activity IDs, one per line')
-    
-    args = parser.parse_args()
-    
-    # Get activity IDs from different sources
-    activity_ids = []
-    
-    # Add activities from --activity arguments
-    if args.activity:
-        activity_ids.extend(args.activity)
-    
-    # Add activities from file if specified
-    if args.file:
-        try:
-            with open(args.file, 'r') as f:
-                file_ids = [line.strip() for line in f if line.strip()]
-                activity_ids.extend(file_ids)
-                print(f"Loaded {len(file_ids)} activity IDs from {args.file}")
-        except Exception as e:
-            print(f"Error reading activity IDs from file: {str(e)}")
-    
-    # If no activity IDs provided, prompt the user
-    if not activity_ids:
-        while True:
-            activity_id = input("Enter a Garmin activity ID (or press Enter when done): ")
-            if not activity_id:
-                break
-            activity_ids.append(activity_id)
-    
-    if not activity_ids:
-        print("No activity IDs provided. Exiting.")
-        sys.exit(1)
-    
-    print(f"Preparing to process {len(activity_ids)} activities: {', '.join(activity_ids[:5])}" + 
-          (f" and {len(activity_ids) - 5} more..." if len(activity_ids) > 5 else ""))
-    
-    try:
-        # Initialize the scraper with connection to existing Chrome session
-        print(f"Connecting to Chrome session on port {args.port}...")
-        scraper = GarminConnectScraper(debug_port=args.port)
-        
-        # Process all activities
-        df = scraper.process_multiple_activities(activity_ids, output_dir=args.output)
-        
-        if not df.empty:
-            # Display summary of all processed data
-            print("\nAll processed activities summary:")
-            
-            if 'exercise' in df.columns:
-                # Group exercises across all activities
-                exercise_summary = df.groupby(['activity_id', 'exercise', 'date']).agg({
-                    'reps': 'sum'
-                })
-                
-                print("\nExercise Summary by Activity and Date:")
-                print(exercise_summary)
-            
-        else:
-            print("No workout data found across all activities.")
-            
-    except Exception as e:
-        print(f"Error: {e}")
-        import traceback
-        traceback.print_exc()  # Print detailed error information
-        
-    finally:
-        # Always close the browser connection
-        if 'scraper' in locals():
-            scraper.close()
+    // ... keep existing code (command-line argument parser and main script execution)
