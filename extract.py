@@ -440,4 +440,76 @@ class GarminConnectScraper:
 
 # Process command-line arguments when run as script
 if __name__ == "__main__":
-    // ... keep existing code (command-line argument parser and main script execution)
+    parser = argparse.ArgumentParser(description='Extract workout data from Garmin Connect using an existing Chrome session')
+    parser.add_argument('--port', type=int, default=9222, help='Chrome debugging port (default: 9222)')
+    parser.add_argument('--activity', type=str, action='append', help='Garmin activity ID(s) to extract (can be used multiple times)')
+    parser.add_argument('--output', type=str, default='.', help='Output directory for CSV files (default: current directory)')
+    parser.add_argument('--file', type=str, help='File containing activity IDs, one per line')
+    
+    args = parser.parse_args()
+    
+    # Get activity IDs from different sources
+    activity_ids = []
+    
+    # Add activities from --activity arguments
+    if args.activity:
+        activity_ids.extend(args.activity)
+    
+    # Add activities from file if specified
+    if args.file:
+        try:
+            with open(args.file, 'r') as f:
+                file_ids = [line.strip() for line in f if line.strip()]
+                activity_ids.extend(file_ids)
+                print(f"Loaded {len(file_ids)} activity IDs from {args.file}")
+        except Exception as e:
+            print(f"Error reading activity IDs from file: {str(e)}")
+    
+    # If no activity IDs provided, prompt the user
+    if not activity_ids:
+        while True:
+            activity_id = input("Enter a Garmin activity ID (or press Enter when done): ")
+            if not activity_id:
+                break
+            activity_ids.append(activity_id)
+    
+    if not activity_ids:
+        print("No activity IDs provided. Exiting.")
+        sys.exit(1)
+    
+    print(f"Preparing to process {len(activity_ids)} activities: {', '.join(activity_ids[:5])}" + 
+          (f" and {len(activity_ids) - 5} more..." if len(activity_ids) > 5 else ""))
+    
+    try:
+        # Initialize the scraper with connection to existing Chrome session
+        print(f"Connecting to Chrome session on port {args.port}...")
+        scraper = GarminConnectScraper(debug_port=args.port)
+        
+        # Process all activities
+        df = scraper.process_multiple_activities(activity_ids, output_dir=args.output)
+        
+        if not df.empty:
+            # Display summary of all processed data
+            print("\nAll processed activities summary:")
+            
+            if 'exercise' in df.columns:
+                # Group exercises across all activities
+                exercise_summary = df.groupby(['activity_id', 'exercise', 'date']).agg({
+                    'reps': 'sum'
+                })
+                
+                print("\nExercise Summary by Activity and Date:")
+                print(exercise_summary)
+            
+        else:
+            print("No workout data found across all activities.")
+            
+    except Exception as e:
+        print(f"Error: {e}")
+        import traceback
+        traceback.print_exc()  # Print detailed error information
+        
+    finally:
+        # Always close the browser connection
+        if 'scraper' in locals():
+            scraper.close()
