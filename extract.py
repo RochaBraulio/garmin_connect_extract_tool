@@ -316,11 +316,9 @@ class GarminConnectScraper:
             # This is a placeholder. The actual activity_id will be added in process_activity
             print("Activity ID not in DataFrame yet. Will be added during processing_activity")
         
-        # Determine which columns to drop
-        columns_to_drop = ['weight', 'volume']
-        
-        # We want to keep the set column and activity_id column, no longer dropping them
-        # Only drop the original weight and volume columns that are replaced by processed versions
+        # Determine which columns to drop - MODIFIED THIS SECTION
+        # Only drop the specified columns, keep time_iso8601 and rest_iso8601
+        columns_to_drop = ['weight', 'volume', 'time', 'rest', 'time_seconds', 'rest_seconds']
         
         for col in columns_to_drop:
             if col in df.columns:
