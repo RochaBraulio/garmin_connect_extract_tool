@@ -233,7 +233,7 @@ class GarminConnectScraper:
         # Process weight column - extract numeric values
         def extract_weight(weight_str):
             if weight_str == "Bodyweight":
-                return weight_str
+                return -999
             # Extract numbers from strings like "35 kg"
             match = re.search(r'([\d,\.]+)', str(weight_str))
             if match:
@@ -245,8 +245,10 @@ class GarminConnectScraper:
         
         # Process volume column - extract numeric values
         def extract_volume(volume_str):
-            if not volume_str or volume_str == "Bodyweight":
+            if not volume_str:
                 return None
+            if volume_str == "Bodyweight":
+                return -999
             # Extract numbers from strings like "525 kg"
             match = re.search(r'([\d,\.]+)', str(volume_str))
             if match:
@@ -289,11 +291,11 @@ class GarminConnectScraper:
             minutes = int((seconds % 3600) // 60)
             remaining_seconds = seconds % 60
             
-            # Format with precision for partial seconds if needed
+            # Format with precision for partial seconds - replace comma with dot
             if remaining_seconds == int(remaining_seconds):
                 seconds_str = f"{int(remaining_seconds)}S"
             else:
-                seconds_str = f"{remaining_seconds:.3f}S".replace('.', ',')
+                seconds_str = f"{remaining_seconds:.3f}S".replace(',', '.')
             
             # Build the ISO 8601 string
             iso_time = "PT"
@@ -347,22 +349,50 @@ class GarminConnectScraper:
                 print(f"Added activity_id column with value: {activity_id}")
             
             # Create the set_uid column by concatenating set and activity_id
-            # We place it right after the set column
             if 'set' in df.columns and 'activity_id' in df.columns:
-                # Get the column list and find the position of 'set'
-                cols = list(df.columns)
-                set_pos = cols.index('set')
-                
                 # Create the set_uid column
-                df['set_uid'] = df['set'] + '_' + df['activity_id']
+                df['set_uid'] = df['set'] + df['activity_id']
                 print("Created set_uid column by concatenating set and activity_id")
                 
-                # Reorder columns to place set_uid right after set
-                new_cols = cols[:set_pos+1] + ['set_uid'] + [col for col in cols[set_pos+1:] if col != 'set_uid']
+                # Drop the 'set' column as requested
+                df = df.drop(columns=['set'])
+                print("Dropped 'set' column as requested")
+                
+                # Reorder columns to put set_uid first
+                cols = list(df.columns)
+                cols.remove('set_uid')
+                new_cols = ['set_uid'] + cols
                 df = df[new_cols]
-                print("Reordered columns to place set_uid after set column")
+                print("Reordered columns to place set_uid as the first column")
             
-            return df, True
+            # Rename columns according to the requested format
+            column_mapping = {
+                'set_uid': 'set_uid',
+                'activity_id': 'set_activity_id',
+                'exercise': 'set_exercise',
+                'time_iso8601': 'set_active_time',
+                'rest_iso8601': 'set_rest_time',
+                'reps': 'set_repetitions',
+                'weight_value': 'set_weight',
+                'volume_value': 'set_load'
+            }
+            
+            # Create a new DataFrame with only the columns we want, in the specified order
+            output_cols = ['set_uid', 'set_activity_id', 'set_exercise', 'set_active_time', 'set_rest_time', 
+                           'set_repetitions', 'set_weight', 'set_load']
+            
+            # Create a new DataFrame with renamed columns
+            renamed_df = pd.DataFrame()
+            for new_col, old_col in zip(output_cols, [col for col in column_mapping if col in df.columns]):
+                if old_col in df.columns:
+                    renamed_df[new_col] = df[old_col]
+                else:
+                    # If column doesn't exist, create an empty one
+                    renamed_df[new_col] = None
+                    print(f"Warning: Column '{old_col}' not found in data, creating empty column '{new_col}'")
+            
+            print(f"Renamed and reordered columns to: {', '.join(output_cols)}")
+            return renamed_df, True
         else:
             print(f"No workout data found for activity {activity_id}")
             return pd.DataFrame(), False
