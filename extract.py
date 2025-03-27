@@ -45,7 +45,7 @@ class GarminConnectScraper:
             print("Already logged into Garmin Connect")
             self.logged_in = True
         else:
-            print("Not logged into Garmin Connect.")
+            print("Not logged in to Garmin Connect.")
             print("Please log in to Garmin Connect in your Chrome browser first.")
             print("Current URL:", current_url)
             user_input = input("Are you logged in now? (yes/no): ")
@@ -120,8 +120,6 @@ class GarminConnectScraper:
             print(f"Retrieved page source in recovery mode ({len(html_content)} characters)")
             return html_content
     
-    # ... keep existing code (extract_workout_sets, create_workout_dataframe, etc.)
-    
     def extract_workout_sets(self, html_content):
         """Extract workout sets from HTML content"""
         soup = BeautifulSoup(html_content, 'html.parser')
@@ -173,7 +171,7 @@ class GarminConnectScraper:
                 rest = cells[3].text.strip()
                 reps = cells[4].text.strip()
                 
-                # Handle both normal weights and bodyweight exercises
+                # We're still collecting these for processing but will drop them later
                 weight_cell = cells[5]
                 if weight_cell.find('a') and 'Bodyweight' in weight_cell.text:
                     weight_text = "Bodyweight"
@@ -199,7 +197,7 @@ class GarminConnectScraper:
         return workout_data
 
     def create_workout_dataframe(self, workout_data):
-        """Convert workout data to a pandas DataFrame"""
+        """Convert workout data to a pandas DataFrame with the specified columns"""
         if not workout_data:
             print("No workout data to convert to DataFrame")
             return pd.DataFrame()
@@ -207,12 +205,20 @@ class GarminConnectScraper:
         df = pd.DataFrame(workout_data)
         print(f"Created DataFrame with {len(df)} rows and {len(df.columns)} columns")
         
-        # Convert numeric columns
+        # Process set column - convert to int and then format with leading zeros
         try:
+            # First convert to integer
             df['set'] = df['set'].astype(int)
-            print("Converted 'set' column to integers")
+            
+            # Format set numbers with leading zeros to always have 3 digits
+            def format_set_number(set_num):
+                # Format to always have 3 digits with leading zeros
+                return f"{set_num:03d}"
+                
+            df['set'] = df['set'].apply(format_set_number)
+            print("Converted 'set' column to formatted string with leading zeros")
         except Exception as e:
-            print(f"Error converting 'set' column: {str(e)}")
+            print(f"Error processing 'set' column: {str(e)}")
         
         # Handle non-numeric reps values
         def convert_reps(reps_str):
@@ -227,7 +233,7 @@ class GarminConnectScraper:
         # Process weight column - extract numeric values
         def extract_weight(weight_str):
             if weight_str == "Bodyweight":
-                return weight_str
+                return -999
             # Extract numbers from strings like "35 kg"
             match = re.search(r'([\d,\.]+)', str(weight_str))
             if match:
@@ -235,12 +241,14 @@ class GarminConnectScraper:
             return weight_str
             
         df['weight_value'] = df['weight'].apply(extract_weight)
-        print("Processed 'weight' column")
+        print("Processed 'weight' column to 'weight_value'")
         
         # Process volume column - extract numeric values
         def extract_volume(volume_str):
-            if not volume_str or volume_str == "Bodyweight":
+            if not volume_str:
                 return None
+            if volume_str == "Bodyweight":
+                return -999
             # Extract numbers from strings like "525 kg"
             match = re.search(r'([\d,\.]+)', str(volume_str))
             if match:
@@ -248,7 +256,7 @@ class GarminConnectScraper:
             return None
             
         df['volume_value'] = df['volume'].apply(extract_volume)
-        print("Processed 'volume' column")
+        print("Processed 'volume' column to 'volume_value'")
         
         # Process time and rest columns to seconds
         def time_to_seconds(time_str):
@@ -273,6 +281,52 @@ class GarminConnectScraper:
         df['rest_seconds'] = df['rest'].apply(time_to_seconds)
         print("Processed time and rest columns")
         
+        # Convert time_seconds and rest_seconds to ISO 8601 format for PostgreSQL interval
+        def seconds_to_iso8601(seconds):
+            if seconds is None:
+                return None
+            
+            # Format according to ISO 8601 duration format: PT[hours]H[minutes]M[seconds]S
+            hours = int(seconds // 3600)
+            minutes = int((seconds % 3600) // 60)
+            remaining_seconds = seconds % 60
+            
+            # Format with precision for partial seconds - replace comma with dot
+            if remaining_seconds == int(remaining_seconds):
+                seconds_str = f"{int(remaining_seconds)}S"
+            else:
+                seconds_str = f"{remaining_seconds:.3f}S".replace(',', '.')
+            
+            # Build the ISO 8601 string
+            iso_time = "PT"
+            if hours > 0:
+                iso_time += f"{hours}H"
+            if minutes > 0:
+                iso_time += f"{minutes}M"
+            iso_time += seconds_str
+            
+            return iso_time
+        
+        # Create new columns with ISO 8601 format
+        df['time_iso8601'] = df['time_seconds'].apply(seconds_to_iso8601)
+        df['rest_iso8601'] = df['rest_seconds'].apply(seconds_to_iso8601)
+        print("Created ISO 8601 formatted time and rest columns")
+        
+        # Add activity_id to the dataframe if it's not already there
+        # This is needed to create the set_uid column
+        if 'activity_id' not in df.columns:
+            # This is a placeholder. The actual activity_id will be added in process_activity
+            print("Activity ID not in DataFrame yet. Will be added during processing_activity")
+        
+        # Determine which columns to drop - MODIFIED THIS SECTION
+        # Only drop the specified columns, keep time_iso8601 and rest_iso8601
+        columns_to_drop = ['weight', 'volume', 'time', 'rest', 'time_seconds', 'rest_seconds']
+        
+        for col in columns_to_drop:
+            if col in df.columns:
+                df = df.drop(columns=[col])
+                print(f"Dropped column: {col}")
+        
         return df
 
     def save_dataframe_to_csv(self, df, filename="workout_data.csv"):
@@ -289,10 +343,56 @@ class GarminConnectScraper:
             print(f"Successfully extracted {len(workout_data)} workout sets")
             df = self.create_workout_dataframe(workout_data)
             
-            # Add activity_id as a column
-            df['activity_id'] = activity_id
+            # Add activity_id as a column if we haven't already
+            if 'activity_id' not in df.columns:
+                df['activity_id'] = activity_id
+                print(f"Added activity_id column with value: {activity_id}")
             
-            return df, True
+            # Create the set_uid column by concatenating set and activity_id
+            if 'set' in df.columns and 'activity_id' in df.columns:
+                # Create the set_uid column
+                df['set_uid'] = df['set'] + df['activity_id']
+                print("Created set_uid column by concatenating set and activity_id")
+                
+                # Drop the 'set' column as requested
+                df = df.drop(columns=['set'])
+                print("Dropped 'set' column as requested")
+                
+                # Reorder columns to put set_uid first
+                cols = list(df.columns)
+                cols.remove('set_uid')
+                new_cols = ['set_uid'] + cols
+                df = df[new_cols]
+                print("Reordered columns to place set_uid as the first column")
+            
+            # Rename columns according to the requested format
+            column_mapping = {
+                'set_uid': 'set_uid',
+                'activity_id': 'set_activity_id',
+                'exercise': 'set_exercise',
+                'time_iso8601': 'set_active_time',
+                'rest_iso8601': 'set_rest_time',
+                'reps': 'set_repetitions',
+                'weight_value': 'set_weight',
+                'volume_value': 'set_load'
+            }
+            
+            # Create a new DataFrame with only the columns we want, in the specified order
+            output_cols = ['set_uid', 'set_activity_id', 'set_exercise', 'set_active_time', 'set_rest_time', 
+                           'set_repetitions', 'set_weight', 'set_load']
+            
+            # Create a new DataFrame with renamed columns
+            renamed_df = pd.DataFrame()
+            for new_col, old_col in zip(output_cols, [col for col in column_mapping if col in df.columns]):
+                if old_col in df.columns:
+                    renamed_df[new_col] = df[old_col]
+                else:
+                    # If column doesn't exist, create an empty one
+                    renamed_df[new_col] = None
+                    print(f"Warning: Column '{old_col}' not found in data, creating empty column '{new_col}'")
+            
+            print(f"Renamed and reordered columns to: {', '.join(output_cols)}")
+            return renamed_df, True
         else:
             print(f"No workout data found for activity {activity_id}")
             return pd.DataFrame(), False
@@ -399,9 +499,8 @@ if __name__ == "__main__":
             if 'exercise' in df.columns:
                 # Group exercises across all activities
                 exercise_summary = df.groupby(['activity_id', 'exercise']).agg({
-                    'set': 'count', 
                     'reps': 'sum'
-                }).rename(columns={'set': 'total_sets'})
+                })
                 
                 print("\nExercise Summary by Activity:")
                 print(exercise_summary)
