@@ -70,188 +70,246 @@ class GarminConnectScraper:
             
             # Wait for the activities to load
             print("Waiting for activities list to load...")
-            WebDriverWait(self.driver, 10).until(
+            WebDriverWait(self.driver, 15).until(
                 EC.presence_of_element_located((By.CSS_SELECTOR, "div.activity-list-container"))
             )
             
-            # Give it a bit more time for the activities to fully load
-            time.sleep(2)
+            # Give it a bit more time for all the activities to fully load
+            time.sleep(3)
             
             # Get the page source
             html_content = self.driver.page_source
             print(f"Retrieved activities page source ({len(html_content)} characters)")
             
-            # Parse the page to extract activity IDs and dates
+            # Save the HTML for debugging
+            with open("activities_page_debug.html", "w", encoding="utf-8") as f:
+                f.write(html_content)
+            print("Saved activities page HTML to 'activities_page_debug.html' for debugging")
+            
+            # Parse the page
             soup = BeautifulSoup(html_content, 'html.parser')
             
-            # Debug: Save activities page source for inspection
-            with open("activities_page.html", "w", encoding="utf-8") as f:
-                f.write(html_content)
-            print("Saved activities page HTML to 'activities_page.html' for debugging")
+            # Find all activity items - look for the entire activity list item container
+            activity_items = soup.find_all("div", class_=lambda c: c and "activity-list-item" in c.lower() if c else False)
+            print(f"Found {len(activity_items)} activity items using generic class search")
             
-            # Look for activities using the new class names from the user's input
-            activity_items = soup.find_all("div", class_=lambda c: c and "activity-list-container" in c or "ActivityListItem" in c if c else False)
+            # If no items found with the generic search, try specific class names provided
             if not activity_items:
-                print("No activity items found, trying alternative selectors...")
-                # Try a more general approach to find activities
-                activity_items = soup.find_all("div", attrs={"data-activity-id": True})
+                print("Trying to find activities using specific class names...")
                 
-            print(f"Found {len(activity_items)} potential activity containers")
-            
-            # Find all date containers with the class names from user's example
-            date_containers = soup.find_all("div", class_=lambda c: c and "ActivityListItem_dateListContainer" in c if c else False)
-            print(f"Found {len(date_containers)} date containers")
-            
-            # Find all activity name links that contain the activity ID
-            activity_links = soup.find_all("a", href=lambda href: href and "/activity/" in href if href else False)
-            print(f"Found {len(activity_links)} activity links")
-            
-            # Process each activity link to extract ID and find associated date
-            for link in activity_links:
-                try:
-                    # Extract activity ID from the link
-                    href = link.get("href")
-                    if not href or "/activity/" not in href:
-                        continue
-                        
-                    activity_id = href.split("/")[-1]
-                    
-                    # Find the parent container that contains both the link and date info
-                    parent_container = None
-                    parent = link.parent
-                    while parent and parent.name != "html":
-                        if parent.find("div", class_=lambda c: c and "ActivityListItem_dateListContainer" in c if c else False):
-                            parent_container = parent
-                            break
-                        parent = parent.parent
-                    
-                    if not parent_container:
-                        print(f"Could not find parent container with date for activity {activity_id}")
-                        continue
-                    
-                    # Extract date from the parent container
-                    date_container = parent_container.find("div", class_=lambda c: c and "ActivityListItem_dateListContainer" in c if c else False)
-                    if not date_container:
-                        print(f"Could not find date container for activity {activity_id}")
-                        continue
-                    
-                    # Extract day/month and year separately as in the example
-                    date_span = date_container.find("span", class_=lambda c: c and "ActivityListItem_activityDate" in c if c else False)
-                    year_span = date_container.find("span", class_=lambda c: c and "ActivityListItem_activityDateYear" in c if c else False)
-                    
-                    if not date_span or not year_span:
-                        print(f"Could not find date spans for activity {activity_id}")
-                        continue
-                    
-                    date_text = date_span.text.strip()  # Format: "20 Mar" or day of week
-                    year_text = year_span.text.strip()  # Format: "2025"
-                    
-                    print(f"Activity {activity_id}: Raw date '{date_text}', year '{year_text}'")
-                    
-                    # Parse the date (handle both numeric dates and day names)
+                # Method 1: Find all activity links directly
+                activity_links = soup.find_all("a", href=lambda href: href and "/activity/" in href if href else False)
+                print(f"Found {len(activity_links)} activity links")
+                
+                # Extract activity IDs and dates
+                for activity_link in activity_links:
                     try:
-                        if any(day in date_text.lower() for day in ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday']):
-                            # If it's a day name, calculate the date based on current date
-                            day_of_week = date_text.split('@')[0].strip().lower()
-                            days = {
-                                'monday': 0, 'tuesday': 1, 'wednesday': 2, 'thursday': 3, 
-                                'friday': 4, 'saturday': 5, 'sunday': 6
-                            }
+                        # Extract activity ID from the link href
+                        href = activity_link.get("href")
+                        activity_id = href.split("/")[-1]
+                        
+                        # Find the ancestor element that contains both the link and date information
+                        parent = activity_link
+                        date_container = None
+                        max_levels = 10  # Maximum levels to search up the DOM
+                        
+                        # Look up the DOM tree for the date container
+                        for _ in range(max_levels):
+                            parent = parent.parent
+                            if not parent or parent.name == "html":
+                                break
                             
-                            # Get today's weekday (0=Monday, 6=Sunday)
-                            today = datetime.now()
-                            today_weekday = today.weekday()  # 0 for Monday, 6 for Sunday
+                            # Try to find the date container in this parent
+                            date_container = parent.find("div", class_=lambda c: c and "ActivityListItem_dateListContainer" in c if c else False)
+                            if date_container:
+                                break
+                        
+                        if date_container:
+                            # Extract day/month
+                            date_span = date_container.find("span", class_=lambda c: c and "ActivityListItem_activityDate" in c if c else False)
+                            # Extract year
+                            year_span = date_container.find("span", class_=lambda c: c and "ActivityListItem_activityDateYear" in c if c else False)
                             
-                            # Find the target day index
-                            target_day_index = -1
-                            for day_name, day_index in days.items():
-                                if day_name in day_of_week:
-                                    target_day_index = day_index
+                            if date_span and year_span:
+                                date_text = date_span.text.strip()
+                                year_text = year_span.text.strip()
+                                
+                                print(f"Activity {activity_id}: Found date text '{date_text}' and year '{year_text}'")
+                                
+                                try:
+                                    # Handle day-month formats like "20 Mar"
+                                    if re.match(r'\d{1,2}\s+[A-Za-z]{3}', date_text):
+                                        date_obj = datetime.strptime(f"{date_text} {year_text}", "%d %b %Y")
+                                        formatted_date = date_obj.strftime("%Y-%m-%d")
+                                        self.activity_dates[activity_id] = formatted_date
+                                        print(f"Activity {activity_id}: Parsed date as {formatted_date}")
+                                    else:
+                                        print(f"Activity {activity_id}: Unrecognized date format: '{date_text}'")
+                                except Exception as date_error:
+                                    print(f"Activity {activity_id}: Error parsing date: {str(date_error)}")
+                            else:
+                                print(f"Activity {activity_id}: Could not find date spans within the date container")
+                        else:
+                            print(f"Activity {activity_id}: Could not find date container in the parent hierarchy")
+                    except Exception as e:
+                        print(f"Error processing activity link: {str(e)}")
+            
+            # If we didn't find any dates, try an alternative approach
+            if not self.activity_dates:
+                print("\nNo dates found with the primary approach. Trying alternative method...")
+                
+                # Method 2: Look directly for date containers and associated activity links
+                date_containers = soup.find_all("div", class_=lambda c: c and "ActivityListItem_dateListContainer" in c if c else False)
+                print(f"Found {len(date_containers)} date containers")
+                
+                for date_container in date_containers:
+                    try:
+                        # Get parent element that might contain the activity link
+                        parent = date_container.parent
+                        
+                        # Look for an activity link within this parent element or its children
+                        max_levels_down = 5  # Maximum levels to search down the DOM
+                        activity_link = None
+                        
+                        # Function to recursively search for activity links
+                        def find_activity_link(element, current_level=0):
+                            if current_level > max_levels_down:
+                                return None
+                                
+                            # Check if this element is an activity link
+                            if element.name == "a" and element.get("href") and "/activity/" in element.get("href"):
+                                return element
+                                
+                            # Check children
+                            for child in element.children:
+                                if not isinstance(child, str) and hasattr(child, 'name') and child.name:
+                                    result = find_activity_link(child, current_level + 1)
+                                    if result:
+                                        return result
+                            return None
+                        
+                        # Look for activity link in parent and siblings
+                        activity_link = find_activity_link(parent)
+                        
+                        if activity_link:
+                            href = activity_link.get("href")
+                            activity_id = href.split("/")[-1]
+                            
+                            # Extract day/month and year
+                            date_span = date_container.find("span", class_=lambda c: c and "ActivityListItem_activityDate" in c if c else False)
+                            year_span = date_container.find("span", class_=lambda c: c and "ActivityListItem_activityDateYear" in c if c else False)
+                            
+                            if date_span and year_span:
+                                date_text = date_span.text.strip()
+                                year_text = year_span.text.strip()
+                                
+                                try:
+                                    # Parse the date
+                                    if re.match(r'\d{1,2}\s+[A-Za-z]{3}', date_text):
+                                        date_obj = datetime.strptime(f"{date_text} {year_text}", "%d %b %Y")
+                                        formatted_date = date_obj.strftime("%Y-%m-%d")
+                                        self.activity_dates[activity_id] = formatted_date
+                                        print(f"Activity {activity_id}: Parsed date as {formatted_date} (alternative method)")
+                                except Exception as date_error:
+                                    print(f"Activity {activity_id}: Error parsing date: {str(date_error)}")
+                        else:
+                            print(f"Could not find activity link for date container")
+                    except Exception as e:
+                        print(f"Error processing date container: {str(e)}")
+            
+            # Third method: Look for the activity name containers with links
+            if not self.activity_dates:
+                print("\nStill no dates found. Trying one more method...")
+                activity_name_containers = soup.find_all("div", class_=lambda c: c and "InlineEditActivityName_activityName" in c if c else False)
+                print(f"Found {len(activity_name_containers)} activity name containers")
+                
+                for name_container in activity_name_containers:
+                    try:
+                        # Find the activity link
+                        activity_link = name_container.find("a", href=lambda href: href and "/activity/" in href if href else False)
+                        
+                        if activity_link:
+                            href = activity_link.get("href")
+                            activity_id = href.split("/")[-1]
+                            
+                            # Find the parent container for this activity
+                            parent = name_container
+                            date_container = None
+                            
+                            # Look up a few levels to find the date container
+                            for _ in range(10):  # Maximum 10 levels up
+                                parent = parent.parent
+                                if not parent or parent.name == "html":
+                                    break
+                                    
+                                # Try to find date container in this parent
+                                date_container = parent.find("div", class_=lambda c: c and "ActivityListItem_dateListContainer" in c if c else False)
+                                if date_container:
                                     break
                             
-                            if target_day_index == -1:
-                                raise ValueError(f"Could not parse day of week: {day_of_week}")
-                            
-                            # Calculate the date
-                            days_diff = target_day_index - today_weekday
-                            if days_diff > 0:
-                                # Day is later this week (in the future)
-                                days_diff -= 7  # Go back to previous week
+                            if date_container:
+                                # Extract date elements
+                                date_span = date_container.find("span", class_=lambda c: c and "ActivityListItem_activityDate" in c if c else False)
+                                year_span = date_container.find("span", class_=lambda c: c and "ActivityListItem_activityDateYear" in c if c else False)
                                 
-                            target_date = today + timedelta(days=days_diff)
-                            formatted_date = target_date.strftime("%Y-%m-%d")
-                        else:
-                            # Parse the date in "DD MMM YYYY" format
-                            date_obj = datetime.strptime(f"{date_text} {year_text}", "%d %b %Y")
-                            formatted_date = date_obj.strftime("%Y-%m-%d")
-                        
-                        # Store the activity ID and date
-                        self.activity_dates[activity_id] = formatted_date
-                        print(f"Activity {activity_id}: Parsed date {formatted_date}")
-                    except ValueError as e:
-                        print(f"Error parsing date '{date_text} {year_text}': {str(e)}")
-                        # Try an alternative date parsing as last resort
-                        try:
-                            if '@' in date_text:
-                                # This might be a day with time like "Thursday @ 14:30"
-                                day_part = date_text.split('@')[0].strip()
-                                # Use current year if not explicitly provided
-                                current_year = datetime.now().year
-                                if not year_text or not year_text.strip():
-                                    year_text = str(current_year)
-                                
-                                # Handle this specially
-                                today = datetime.now()
-                                weekday_map = {
-                                    'monday': 0, 'tuesday': 1, 'wednesday': 2, 'thursday': 3, 
-                                    'friday': 4, 'saturday': 5, 'sunday': 6
-                                }
-                                
-                                target_weekday = -1
-                                for day_name, day_num in weekday_map.items():
-                                    if day_name.lower() in day_part.lower():
-                                        target_weekday = day_num
-                                        break
-                                
-                                if target_weekday >= 0:
-                                    # Calculate the most recent occurrence of this weekday
-                                    days_ago = (today.weekday() - target_weekday) % 7
-                                    if days_ago == 0:
-                                        # If today is the target day, assume it's today's activity
-                                        target_date = today
-                                    else:
-                                        # Otherwise it was the most recent occurrence
-                                        target_date = today - timedelta(days=days_ago)
+                                if date_span and year_span:
+                                    date_text = date_span.text.strip()
+                                    year_text = year_span.text.strip()
                                     
-                                    formatted_date = target_date.strftime("%Y-%m-%d")
-                                    self.activity_dates[activity_id] = formatted_date
-                                    print(f"Activity {activity_id}: Resolved weekday to {formatted_date}")
-                                else:
-                                    # Fallback: Use today's date
-                                    formatted_date = today.strftime("%Y-%m-%d")
-                                    self.activity_dates[activity_id] = formatted_date
-                                    print(f"Activity {activity_id}: Using fallback date {formatted_date}")
+                                    try:
+                                        if re.match(r'\d{1,2}\s+[A-Za-z]{3}', date_text):
+                                            date_obj = datetime.strptime(f"{date_text} {year_text}", "%d %b %Y")
+                                            formatted_date = date_obj.strftime("%Y-%m-%d")
+                                            self.activity_dates[activity_id] = formatted_date
+                                            print(f"Activity {activity_id}: Parsed date as {formatted_date} (third method)")
+                                    except Exception as date_error:
+                                        print(f"Activity {activity_id}: Error parsing date: {str(date_error)}")
                             else:
-                                # Fallback: Use today's date
-                                formatted_date = datetime.now().strftime("%Y-%m-%d")
-                                self.activity_dates[activity_id] = formatted_date
-                                print(f"Activity {activity_id}: Using fallback date {formatted_date}")
-                        except Exception as inner_e:
-                            print(f"Error in alternative date parsing: {str(inner_e)}")
-                            # Ultimate fallback
-                            self.activity_dates[activity_id] = datetime.now().strftime("%Y-%m-%d")
-                except Exception as e:
-                    print(f"Error processing activity link: {str(e)}")
+                                print(f"Activity {activity_id}: Could not find date container")
+                    except Exception as e:
+                        print(f"Error processing activity name container: {str(e)}")
             
             print(f"Extracted dates for {len(self.activity_dates)} activities")
             
-            # If we need more activities (scrolling for pagination), we could add that here
+            # If we still don't have dates, try one more approach with direct XPath
+            if not self.activity_dates:
+                print("\nTrying XPath approach for direct extraction...")
+                try:
+                    # Use Selenium to find elements with XPath
+                    activity_items = self.driver.find_elements(By.XPATH, "//div[contains(@class, 'activity-list-item')]")
+                    print(f"Found {len(activity_items)} activity items using XPath")
+                    
+                    for item in activity_items:
+                        try:
+                            # Get activity link and ID
+                            activity_link = item.find_element(By.XPATH, ".//a[contains(@href, '/activity/')]")
+                            activity_id = activity_link.get_attribute("href").split("/")[-1]
+                            
+                            # Get date elements
+                            date_span = item.find_element(By.XPATH, ".//span[contains(@class, 'ActivityListItem_activityDate')]")
+                            year_span = item.find_element(By.XPATH, ".//span[contains(@class, 'ActivityListItem_activityDateYear')]")
+                            
+                            date_text = date_span.text.strip()
+                            year_text = year_span.text.strip()
+                            
+                            try:
+                                if re.match(r'\d{1,2}\s+[A-Za-z]{3}', date_text):
+                                    date_obj = datetime.strptime(f"{date_text} {year_text}", "%d %b %Y")
+                                    formatted_date = date_obj.strftime("%Y-%m-%d")
+                                    self.activity_dates[activity_id] = formatted_date
+                                    print(f"Activity {activity_id}: Parsed date as {formatted_date} (XPath method)")
+                            except Exception as date_error:
+                                print(f"Activity {activity_id}: Error parsing date: {str(date_error)}")
+                        except Exception as e:
+                            print(f"Error processing activity item with XPath: {str(e)}")
+                except Exception as e:
+                    print(f"Error with XPath extraction: {str(e)}")
             
             return self.activity_dates
         except Exception as e:
             print(f"Error retrieving activity dates: {str(e)}")
             return {}
-    
+
     def get_activity_data(self, activity_id):
         """Navigate to the activity page and get the page content"""
         if not self.logged_in:
@@ -378,13 +436,13 @@ class GarminConnectScraper:
                 volume_text = cells[6].text.strip()
                 
                 set_data = {
-                    'set': set_number,  # Will be dropped later
+                    'set': set_number,  # Now keeping this column
                     'exercise': exercise,
                     'time': time,
                     'rest': rest,
                     'reps': reps,
-                    'weight': weight_text,  # Will be dropped later
-                    'volume': volume_text  # Will be dropped later
+                    'weight': weight_text,  # Will be processed but not dropped
+                    'volume': volume_text  # Will be processed but not dropped
                 }
                 print(f"Set {set_number}: {exercise} - {reps} reps at {weight_text}")
                 workout_data.append(set_data)
@@ -406,12 +464,20 @@ class GarminConnectScraper:
         df['date'] = activity_date
         print(f"Added date column with value: {activity_date}")
         
-        # Process remaining columns (still process set before dropping it)
+        # Process set column - convert to int and then format with leading zeros
         try:
+            # First convert to integer
             df['set'] = df['set'].astype(int)
-            print("Converted 'set' column to integers")
+            
+            # Format set numbers with leading zeros to always have 3 digits
+            def format_set_number(set_num):
+                # Format to always have 3 digits with leading zeros
+                return f"{set_num:03d}"
+                
+            df['set'] = df['set'].apply(format_set_number)
+            print("Converted 'set' column to formatted string with leading zeros")
         except Exception as e:
-            print(f"Error converting 'set' column: {str(e)}")
+            print(f"Error processing 'set' column: {str(e)}")
         
         # Handle non-numeric reps values
         def convert_reps(reps_str):
@@ -472,8 +538,18 @@ class GarminConnectScraper:
         df['rest_seconds'] = df['rest'].apply(time_to_seconds)
         print("Processed time and rest columns")
         
-        # Drop the requested columns: 'set', 'weight', 'volume'
-        columns_to_drop = ['set', 'weight', 'volume']
+        # Add activity_id to the dataframe if it's not already there
+        # This is needed to create the set_uid column
+        if 'activity_id' not in df.columns:
+            # This is a placeholder. The actual activity_id will be added in process_activity
+            print("Activity ID not in DataFrame yet. Will be added during processing_activity")
+        
+        # Determine which columns to drop
+        columns_to_drop = ['weight', 'volume']
+        
+        # We want to keep the set column and activity_id column, no longer dropping them
+        # Only drop the original weight and volume columns that are replaced by processed versions
+        
         for col in columns_to_drop:
             if col in df.columns:
                 df = df.drop(columns=[col])
@@ -488,19 +564,42 @@ class GarminConnectScraper:
     
     def process_activity(self, activity_id):
         """Process a single activity and return the dataframe"""
+        # Make sure we have dates for activities
+        if not self.activity_dates:
+            print("Activity dates not loaded. Getting dates from activities page...")
+            self.get_dates_from_activities_page()
+        
         html_content = self.get_activity_data(activity_id)
         workout_data = self.extract_workout_sets(html_content)
         
         # Get the activity date from our dictionary
         activity_date = self.activity_dates.get(activity_id, "Unknown")
-        print(f"Activity date from activities list: {activity_date}")
+        print(f"Activity date for ID {activity_id}: {activity_date}")
         
         if workout_data:
             print(f"Successfully extracted {len(workout_data)} workout sets")
             df = self.create_workout_dataframe(workout_data, activity_date)
             
-            # Add activity_id as a column
-            df['activity_id'] = activity_id
+            # Add activity_id as a column if we haven't already
+            if 'activity_id' not in df.columns:
+                df['activity_id'] = activity_id
+                print(f"Added activity_id column with value: {activity_id}")
+            
+            # Create the set_uid column by concatenating set and activity_id
+            # We place it right after the set column
+            if 'set' in df.columns and 'activity_id' in df.columns:
+                # Get the column list and find the position of 'set'
+                cols = list(df.columns)
+                set_pos = cols.index('set')
+                
+                # Create the set_uid column
+                df['set_uid'] = df['set'] + df['activity_id']
+                print("Created set_uid column by concatenating set and activity_id")
+                
+                # Reorder columns to place set_uid right after set
+                new_cols = cols[:set_pos+1] + ['set_uid'] + [col for col in cols[set_pos+1:] if col != 'set_uid']
+                df = df[new_cols]
+                print("Reordered columns to place set_uid after set column")
             
             return df, True
         else:
@@ -631,3 +730,4 @@ if __name__ == "__main__":
         # Always close the browser connection
         if 'scraper' in locals():
             scraper.close()
+
