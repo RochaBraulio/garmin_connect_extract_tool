@@ -28,20 +28,26 @@ Tool for extracting workout data from Garmin Connect website. Created with Lovab
 
     - If you want to extract data from a single activity
         ```shell
-        python extract.py --activity YOUR_ACTIVITY_ID
+        python extract.py --activity ACTIVITY ID --date YYYY-MM-DD
         ```
 
     - If you want to extract data from multiple activities, there are two alternatives.
 
         (i) Add multiple arguments to the command 
         ```shell
-        python extract.py --activity ID1 --activity ID2 --activity ID3
+        python extract.py --activity ID1 --date YYYY-MM-DD --activity ID2 --date YYYY-MM-DD --activity ID3 --date YYYY-MM-DD
         ```
 
         (ii) Pass a text file to the commmand with all the IDs from the desired activities (Preferred)
         ```shell
-        python extract.py --file activity_ids.txt
+        python extract.py --file activities.txt
         ```
+        
+        File Format for Bulk Processing:
+        When using --file, create a text file with one activity per line in this format:
+        activity ID1,YYYY-MM-DD activity ID2,YYYY-MM-DD
+        Each line should contain the activity ID, a comma, and the date in YYYY-MM-DD format.
+
 5. The script will extract data and save it as a .csv file in the folder where the script is located. In case of multiple activities, the script will save individual files for each activity and a file containg all the activities combined.
 
 6. Once you are done, close the browser and the terminal session(s).
