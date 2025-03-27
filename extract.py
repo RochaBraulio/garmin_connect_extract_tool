@@ -10,6 +10,7 @@ from bs4 import BeautifulSoup
 import sys
 import argparse
 import os
+from datetime import datetime
 
 class GarminConnectScraper:
     def __init__(self, debug_port=9222):
@@ -24,6 +25,7 @@ class GarminConnectScraper:
             print(f"Current URL: {self.driver.current_url}")
             
             self.base_url = "https://connect.garmin.com"
+            self.activity_dates = {}  # Dictionary to store activity dates
             
             # Check if already logged in
             self.verify_login()
@@ -245,10 +247,8 @@ class GarminConnectScraper:
         
         # Process volume column - extract numeric values
         def extract_volume(volume_str):
-            if not volume_str:
+            if not volume_str or volume_str == "Bodyweight":
                 return None
-            if volume_str == "Bodyweight":
-                return -999
             # Extract numbers from strings like "525 kg"
             match = re.search(r'([\d,\.]+)', str(volume_str))
             if match:
@@ -334,7 +334,7 @@ class GarminConnectScraper:
         df.to_csv(filename, index=False)
         print(f"Workout data saved to {filename}")
     
-    def process_activity(self, activity_id):
+    def process_activity(self, activity_id, activity_date=None):
         """Process a single activity and return the dataframe"""
         html_content = self.get_activity_data(activity_id)
         workout_data = self.extract_workout_sets(html_content)
@@ -347,6 +347,14 @@ class GarminConnectScraper:
             if 'activity_id' not in df.columns:
                 df['activity_id'] = activity_id
                 print(f"Added activity_id column with value: {activity_id}")
+            
+            # Add the activity date as a column
+            if activity_date:
+                df['activity_date'] = activity_date
+                print(f"Added activity_date column with value: {activity_date}")
+            else:
+                df['activity_date'] = None
+                print(f"No date provided for activity {activity_id}, setting to None")
             
             # Create the set_uid column by concatenating set and activity_id
             if 'set' in df.columns and 'activity_id' in df.columns:
@@ -369,6 +377,7 @@ class GarminConnectScraper:
             column_mapping = {
                 'set_uid': 'set_uid',
                 'activity_id': 'set_activity_id',
+                'activity_date': 'set_date',  # New column
                 'exercise': 'set_exercise',
                 'time_iso8601': 'set_active_time',
                 'rest_iso8601': 'set_rest_time',
@@ -378,8 +387,9 @@ class GarminConnectScraper:
             }
             
             # Create a new DataFrame with only the columns we want, in the specified order
-            output_cols = ['set_uid', 'set_activity_id', 'set_exercise', 'set_active_time', 'set_rest_time', 
-                           'set_repetitions', 'set_weight', 'set_load']
+            output_cols = ['set_uid', 'set_activity_id', 'set_date', 'set_exercise', 
+                           'set_active_time', 'set_rest_time', 'set_repetitions', 
+                           'set_weight', 'set_load']
             
             # Create a new DataFrame with renamed columns
             renamed_df = pd.DataFrame()
@@ -397,20 +407,22 @@ class GarminConnectScraper:
             print(f"No workout data found for activity {activity_id}")
             return pd.DataFrame(), False
     
-    def process_multiple_activities(self, activity_ids, output_dir="."):
-        """Process multiple activities and save each to a separate CSV file"""
+    def process_multiple_activities(self, activities_with_dates, output_dir="."):
+        """Process multiple activities with their dates and save each to a separate CSV file"""
         # Create output directory if it doesn't exist
         os.makedirs(output_dir, exist_ok=True)
         
         all_data = []
         success_count = 0
         
-        for activity_id in activity_ids:
+        for activity_id, activity_date in activities_with_dates:
             print(f"\n{'='*50}")
-            print(f"Processing activity {activity_id} ({activity_ids.index(activity_id) + 1}/{len(activity_ids)})")
+            print(f"Processing activity {activity_id} ({activities_with_dates.index((activity_id, activity_date)) + 1}/{len(activities_with_dates)})")
+            if activity_date:
+                print(f"Activity date: {activity_date}")
             print(f"{'='*50}\n")
             
-            df, success = self.process_activity(activity_id)
+            df, success = self.process_activity(activity_id, activity_date)
             
             if success:
                 # Save individual activity data
@@ -446,43 +458,69 @@ class GarminConnectScraper:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Extract workout data from Garmin Connect using an existing Chrome session')
     parser.add_argument('--port', type=int, default=9222, help='Chrome debugging port (default: 9222)')
-    parser.add_argument('--activity', type=str, action='append', help='Garmin activity ID(s) to extract (can be used multiple times)')
+    parser.add_argument('--activity', type=str, action='append', help='Garmin activity ID(s) to extract')
+    parser.add_argument('--date', type=str, action='append', help='Date(s) for each activity in format YYYY-MM-DD')
     parser.add_argument('--output', type=str, default='.', help='Output directory for CSV files (default: current directory)')
-    parser.add_argument('--file', type=str, help='File containing activity IDs, one per line')
+    parser.add_argument('--file', type=str, help='File containing activity IDs and dates, format: ACTIVITY_ID,YYYY-MM-DD (one per line)')
     
     args = parser.parse_args()
     
-    # Get activity IDs from different sources
-    activity_ids = []
+    # Get activity IDs and dates from different sources
+    activities_with_dates = []
     
-    # Add activities from --activity arguments
+    # Add activities from --activity and --date arguments
     if args.activity:
-        activity_ids.extend(args.activity)
+        if args.date and len(args.activity) == len(args.date):
+            for activity_id, date in zip(args.activity, args.date):
+                activities_with_dates.append((activity_id, date))
+                print(f"Added date mapping: Activity {activity_id} -> {date}")
+        else:
+            if args.date:
+                print(f"Warning: Number of dates ({len(args.date)}) doesn't match number of activities ({len(args.activity)})")
+            for activity_id in args.activity:
+                activities_with_dates.append((activity_id, None))
     
     # Add activities from file if specified
     if args.file:
         try:
             with open(args.file, 'r') as f:
-                file_ids = [line.strip() for line in f if line.strip()]
-                activity_ids.extend(file_ids)
-                print(f"Loaded {len(file_ids)} activity IDs from {args.file}")
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        # Split line by comma to get activity_id and date
+                        parts = line.split(',')
+                        if len(parts) >= 2:
+                            activity_id = parts[0].strip()
+                            date = parts[1].strip()
+                            activities_with_dates.append((activity_id, date))
+                            print(f"Added from file: Activity {activity_id} -> {date}")
+                        else:
+                            print(f"Warning: Invalid line format in file: '{line}'. Expected format: 'ACTIVITY_ID,YYYY-MM-DD'")
+                print(f"Loaded {len(activities_with_dates)} activity IDs with dates from {args.file}")
         except Exception as e:
             print(f"Error reading activity IDs from file: {str(e)}")
     
     # If no activity IDs provided, prompt the user
-    if not activity_ids:
+    if not activities_with_dates:
         while True:
-            activity_id = input("Enter a Garmin activity ID (or press Enter when done): ")
-            if not activity_id:
+            activity_input = input("Enter activity ID and date (format: ID,YYYY-MM-DD) or press Enter when done: ")
+            if not activity_input:
                 break
-            activity_ids.append(activity_id)
+            
+            parts = activity_input.split(',')
+            if len(parts) >= 2:
+                activity_id = parts[0].strip()
+                date = parts[1].strip()
+                activities_with_dates.append((activity_id, date))
+            else:
+                print("Invalid format. Please use: ACTIVITY_ID,YYYY-MM-DD")
     
-    if not activity_ids:
+    if not activities_with_dates:
         print("No activity IDs provided. Exiting.")
         sys.exit(1)
     
-    print(f"Preparing to process {len(activity_ids)} activities: {', '.join(activity_ids[:5])}" + 
-          (f" and {len(activity_ids) - 5} more..." if len(activity_ids) > 5 else ""))
+    print(f"Processing {len(activities_with_dates)} activities: {', '.join([a[0] for a in activities_with_dates[:5]])}" + 
+          (f" and {len(activities_with_dates) - 5} more..." if len(activities_with_dates) > 5 else ""))
     
     try:
         # Initialize the scraper with connection to existing Chrome session
@@ -490,16 +528,16 @@ if __name__ == "__main__":
         scraper = GarminConnectScraper(debug_port=args.port)
         
         # Process all activities
-        df = scraper.process_multiple_activities(activity_ids, output_dir=args.output)
+        df = scraper.process_multiple_activities(activities_with_dates, output_dir=args.output)
         
         if not df.empty:
             # Display summary of all processed data
             print("\nAll processed activities summary:")
             
-            if 'exercise' in df.columns:
+            if 'set_exercise' in df.columns:
                 # Group exercises across all activities
-                exercise_summary = df.groupby(['activity_id', 'exercise']).agg({
-                    'reps': 'sum'
+                exercise_summary = df.groupby(['set_activity_id', 'set_exercise']).agg({
+                    'set_repetitions': 'sum'
                 })
                 
                 print("\nExercise Summary by Activity:")
