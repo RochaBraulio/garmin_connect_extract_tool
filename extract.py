@@ -247,8 +247,10 @@ class GarminConnectScraper:
         
         # Process volume column - extract numeric values
         def extract_volume(volume_str):
-            if not volume_str or volume_str == "Bodyweight":
+            if not volume_str:
                 return None
+            if volume_str == "Bodyweight":
+                return -999
             # Extract numbers from strings like "525 kg"
             match = re.search(r'([\d,\.]+)', str(volume_str))
             if match:
