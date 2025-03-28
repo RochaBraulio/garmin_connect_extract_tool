@@ -236,6 +236,8 @@ class GarminConnectScraper:
         def extract_weight(weight_str):
             if weight_str == "Bodyweight":
                 return -999
+            if weight_str == "--":
+                return 0
             # Extract numbers from strings like "35 kg"
             match = re.search(r'([\d,\.]+)', str(weight_str))
             if match:
