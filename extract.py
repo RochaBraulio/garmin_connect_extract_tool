@@ -237,7 +237,7 @@ class GarminConnectScraper:
             if weight_str == "Bodyweight":
                 return -999
             if weight_str == "--":
-                return 0
+                return 0.0
             # Extract numbers from strings like "35 kg"
             match = re.search(r'([\d,\.]+)', str(weight_str))
             if match:
@@ -250,14 +250,14 @@ class GarminConnectScraper:
         # Process volume column - extract numeric values
         def extract_volume(volume_str):
             if not volume_str:
-                return None
+                return 0
             if volume_str == "Bodyweight":
                 return -999
             # Extract numbers from strings like "525 kg"
             match = re.search(r'([\d,\.]+)', str(volume_str))
             if match:
                 return float(match.group(1).replace(',', '.'))
-            return None
+            return 0.
             
         df['volume_value'] = df['volume'].apply(extract_volume)
         print("Processed 'volume' column to 'volume_value'")
