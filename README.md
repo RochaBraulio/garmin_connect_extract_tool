@@ -7,16 +7,16 @@ Tool for extracting workout data from Garmin Connect website. Created with Lovab
 
     macOS
     ```shell
-    /Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome --remote-debugging-port=9222
+    /Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome --remote-debugging-port=9222 --user-data-dir="/tmp/chrome-debug"
     ```
 
     Windows
     ```shell
-     & "C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=9222
+     & "C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=9222 --user-data-dir="C:\temp\chrome-debug"
     ```
     Linux
     ```shell
-    google-chrome --remote-debugging-port=9222
+    google-chrome --remote-debugging-port=9222 --user-data-dir="/tmp/chrome-debug"
     ```
 
 
